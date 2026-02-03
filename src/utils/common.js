@@ -297,7 +297,8 @@ export async function handleStreamRequest(res, service, model, requestBody, from
     requestBody.model = model;
     const nativeStream = await service.generateContentStream(model, requestBody);
     const addEvent = getProtocolPrefix(fromProvider) === MODEL_PROTOCOL_PREFIX.CLAUDE || getProtocolPrefix(fromProvider) === MODEL_PROTOCOL_PREFIX.OPENAI_RESPONSES;
-    const openStop = getProtocolPrefix(fromProvider) === MODEL_PROTOCOL_PREFIX.OPENAI ;
+
+    let hasToolCall = false;
 
     try {
         for await (const nativeChunk of nativeStream) {
@@ -335,6 +336,35 @@ export async function handleStreamRequest(res, service, model, requestBody, from
             const chunksToSend = Array.isArray(chunkToSend) ? chunkToSend : [chunkToSend];
 
             for (const chunk of chunksToSend) {
+                // [FIX] 跟踪工具调用并在结束时修正 finish_reason
+                // OpenAI 格式
+                if (chunk.choices?.[0]?.delta?.tool_calls || chunk.choices?.[0]?.finish_reason === 'tool_calls') {
+                    hasToolCall = true;
+                }
+                // Claude 格式
+                if (chunk.type === 'content_block_start' && chunk.content_block?.type === 'tool_use') {
+                    hasToolCall = true;
+                }
+                if (chunk.type === 'message_delta' && (chunk.delta?.stop_reason === 'tool_use' || chunk.stop_reason === 'tool_use')) {
+                    hasToolCall = true;
+                }
+                // Gemini 格式
+                if (chunk.candidates?.[0]?.content?.parts?.some(p => p.functionCall)) {
+                    hasToolCall = true;
+                }
+
+                // 如果之前有工具调用，且当前 chunk 是正常结束，修正为 tool_calls / tool_use / FINISH_REASON_TOOL_CALLS
+                if (hasToolCall && needsConversion) {
+                    if (chunk.choices?.[0]?.finish_reason === 'stop') {
+                        chunk.choices[0].finish_reason = 'tool_calls';
+                    } else if (chunk.type === 'message_delta' && chunk.delta?.stop_reason === 'end_turn') {
+                        chunk.delta.stop_reason = 'tool_use';
+                    } else if (chunk.candidates?.[0]?.finishReason === 'STOP' || chunk.candidates?.[0]?.finishReason === 'stop') {
+                        // 修正 Gemini 原生格式的结束原因
+                        chunk.candidates[0].finishReason = 'TOOL_CALLS';
+                    }
+                }
+
                 if (addEvent) {
                     // fullOldResponseJson += chunk.type+"\n";
                     // fullResponseJson += chunk.type+"\n";
@@ -347,10 +377,6 @@ export async function handleStreamRequest(res, service, model, requestBody, from
                 res.write(`data: ${JSON.stringify(chunk)}\n\n`);
                 // logger.info(`data: ${JSON.stringify(chunk)}\n`);
             }
-        }
-        if (openStop && needsConversion) {
-            res.write(`data: ${JSON.stringify(getOpenAIStreamChunkStop(model))}\n\n`);
-            // logger.info(`data: ${JSON.stringify(getOpenAIStreamChunkStop(model))}\n`);
         }
 
         // 流式请求成功完成，统计使用次数，错误次数重置为0
@@ -1127,6 +1153,34 @@ export function extractSystemPromptFromRequestBody(requestBody, provider) {
 export function getMD5Hash(obj) {
     const jsonString = JSON.stringify(obj);
     return crypto.createHash('md5').update(jsonString).digest('hex');
+}
+
+/**
+ * 将日期转换为系统本地时间格式
+ * @param {string|number} dateInput - 日期字符串或时间戳
+ * @returns {string} 格式化后的时间字符串
+ */
+export function formatToLocal(dateInput) {
+    try {
+        if (!dateInput) return '--';
+        // 处理数值型时间戳（秒 -> 毫秒）
+        let finalInput = dateInput;
+        if (typeof dateInput === 'number' && dateInput < 10000000000) {
+            finalInput = dateInput * 1000;
+        }
+        const date = new Date(finalInput);
+        if (isNaN(date.getTime())) return '--';
+        
+        return date.toLocaleString('zh-CN', {
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false
+        }).replace(/\//g, '-');
+    } catch (e) {
+        return '--';
+    }
 }
 
 

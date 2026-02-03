@@ -8,6 +8,17 @@
                 <i class="fas fa-sync-alt"></i> <span data-i18n="usage.refresh">刷新用量</span>
             </button>
             <span class="usage-last-update" id="usageLastUpdate" data-i18n="usage.lastUpdate" data-i18n-params='{"time":"--"}'>上次更新: --</span>
+            <span class="server-time-display" id="serverTimeDisplay">
+             <span data-i18n="usage.serverTime">服务端时间</span>: <span id="serverTimeValue">--</span>
+            </span>
+        </div>
+
+        <div class="usage-info-banner">
+            <i class="fas fa-info-circle"></i>
+            <span data-i18n="usage.supportedProvidersPrefix">支持用量查询的提供商:</span>
+            <span id="supportedProvidersList" class="supported-providers-tags">
+                <span class="loading-inline"><i class="fas fa-spinner fa-spin"></i></span>
+            </span>
         </div>
         
         <div class="usage-loading" id="usageLoading" style="display: none;">

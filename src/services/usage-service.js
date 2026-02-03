@@ -5,7 +5,7 @@
 
 import { getProviderPoolManager } from './service-manager.js';
 import { serviceInstances } from '../providers/adapter.js';
-import { MODEL_PROVIDER } from '../utils/common.js';
+import { MODEL_PROVIDER, formatToLocal } from '../utils/common.js';
 
 /**
  * 用量查询服务类
@@ -17,6 +17,7 @@ export class UsageService {
             [MODEL_PROVIDER.KIRO_API]: this.getKiroUsage.bind(this),
             [MODEL_PROVIDER.GEMINI_CLI]: this.getGeminiUsage.bind(this),
             [MODEL_PROVIDER.ANTIGRAVITY]: this.getAntigravityUsage.bind(this),
+            [MODEL_PROVIDER.CODEX_API]: this.getCodexUsage.bind(this),
         };
     }
 
@@ -158,6 +159,32 @@ export class UsageService {
     }
 
     /**
+     * 获取 Codex 提供商的用量信息
+     * @param {string} [uuid] - 可选的提供商实例 UUID
+     * @returns {Promise<Object>} Codex 用量信息
+     */
+    async getCodexUsage(uuid = null) {
+        const providerKey = uuid ? MODEL_PROVIDER.CODEX_API + uuid : MODEL_PROVIDER.CODEX_API;
+        const adapter = serviceInstances[providerKey];
+        
+        if (!adapter) {
+            throw new Error(`Codex 服务实例未找到: ${providerKey}`);
+        }
+        
+        // 使用适配器的 getUsageLimits 方法
+        if (typeof adapter.getUsageLimits === 'function') {
+            return adapter.getUsageLimits();
+        }
+        
+        // 兼容直接访问 codexApiService 的情况
+        if (adapter.codexApiService && typeof adapter.codexApiService.getUsageLimits === 'function') {
+            return adapter.codexApiService.getUsageLimits();
+        }
+        
+        throw new Error(`Codex 服务实例不支持用量查询: ${providerKey}`);
+    }
+
+    /**
      * 获取支持用量查询的提供商列表
      * @returns {Array<string>} 支持的提供商类型列表
      */
@@ -287,31 +314,6 @@ export function formatGeminiUsage(usageData) {
         return null;
     }
 
-    const TZ_OFFSET = 8 * 60 * 60 * 1000; // Beijing timezone offset
-
-    /**
-     * 将 UTC 时间转换为北京时间
-     * @param {string} utcString - UTC 时间字符串
-     * @returns {string} 北京时间字符串
-     */
-    function utcToBeijing(utcString) {
-        try {
-            if (!utcString) return '--';
-            const utcDate = new Date(utcString);
-            const beijingTime = new Date(utcDate.getTime() + TZ_OFFSET);
-            return beijingTime
-                .toLocaleString('zh-CN', {
-                    month: '2-digit',
-                    day: '2-digit',
-                    hour: '2-digit',
-                    minute: '2-digit'
-                })
-                .replace(/\//g, '-');
-        } catch (e) {
-            return '--';
-        }
-    }
-
     const result = {
         // 基本信息 - 映射到 Kiro 结构
         daysUntilReset: null,
@@ -350,16 +352,20 @@ export function formatGeminiUsage(usageData) {
 
     // 解析模型配额信息
     if (usageData.models && typeof usageData.models === 'object') {
-        for (const [modelName, modelInfo] of Object.entries(usageData.models)) {
-            // Gemini 返回的数据结构：{ remaining, resetTime, resetTimeRaw }
+        for (const [modelKey, modelInfo] of Object.entries(usageData.models)) {
+            // Gemini 返回的数据结构：{ remaining, resetTime, resetTimeRaw, tokenType }
             // remaining 是 0-1 之间的比例值，表示剩余配额百分比
             const remainingPercent = typeof modelInfo.remaining === 'number' ? modelInfo.remaining : 1;
             const usedPercent = 1 - remainingPercent;
             
+            // 解析 modelKey (modelId:tokenType)
+            const [modelId, tokenType] = modelKey.split(':');
+            const displayName = tokenType ? `${modelId} (${tokenType})` : modelId;
+
             const item = {
                 resourceType: 'MODEL_USAGE',
-                displayName: modelInfo.displayName || modelName,
-                displayNamePlural: modelInfo.displayName || modelName,
+                displayName: displayName,
+                displayNamePlural: displayName,
                 unit: 'quota',
                 currency: null,
                 
@@ -384,13 +390,14 @@ export function formatGeminiUsage(usageData) {
                 bonuses: [],
 
                 // 额外的 Gemini 特有信息
-                modelName: modelName,
+                modelName: modelId,
+                tokenType: tokenType,
                 inputTokenLimit: modelInfo.inputTokenLimit || 0,
                 outputTokenLimit: modelInfo.outputTokenLimit || 0,
                 remaining: remainingPercent,
                 remainingPercent: Math.round(remainingPercent * 100), // 剩余百分比
                 resetTime: (modelInfo.resetTimeRaw || modelInfo.resetTime) ?
-                           utcToBeijing(modelInfo.resetTimeRaw || modelInfo.resetTime) : '--',
+                           formatToLocal(modelInfo.resetTimeRaw || modelInfo.resetTime) : '--',
                 resetTimeRaw: modelInfo.resetTimeRaw || modelInfo.resetTime || null
             };
 
@@ -409,31 +416,6 @@ export function formatGeminiUsage(usageData) {
 export function formatAntigravityUsage(usageData) {
     if (!usageData) {
         return null;
-    }
-
-    const TZ_OFFSET = 8 * 60 * 60 * 1000; // Beijing timezone offset
-
-    /**
-     * 将 UTC 时间转换为北京时间
-     * @param {string} utcString - UTC 时间字符串
-     * @returns {string} 北京时间字符串
-     */
-    function utcToBeijing(utcString) {
-        try {
-            if (!utcString) return '--';
-            const utcDate = new Date(utcString);
-            const beijingTime = new Date(utcDate.getTime() + TZ_OFFSET);
-            return beijingTime
-                .toLocaleString('zh-CN', {
-                    month: '2-digit',
-                    day: '2-digit',
-                    hour: '2-digit',
-                    minute: '2-digit'
-                })
-                .replace(/\//g, '-');
-        } catch (e) {
-            return '--';
-        }
     }
 
     const result = {
@@ -480,6 +462,10 @@ export function formatAntigravityUsage(usageData) {
             const remainingPercent = typeof modelInfo.remaining === 'number' ? modelInfo.remaining : 1;
             const usedPercent = 1 - remainingPercent;
             
+            // 优先使用模型自己的重置时间，如果没有则使用全局重置时间
+            const resetTimeRaw = modelInfo.resetTimeRaw || (usageData.quotaInfo ? usageData.quotaInfo.quotaResetTime : null);
+            const resetTimeFormatted = resetTimeRaw ? formatToLocal(resetTimeRaw) : (modelInfo.resetTime || '--');
+
             const item = {
                 resourceType: 'MODEL_USAGE',
                 displayName: modelInfo.displayName || modelName,
@@ -488,7 +474,7 @@ export function formatAntigravityUsage(usageData) {
                 currency: null,
                 
                 // 当前用量 - Antigravity 返回的是剩余比例，转换为已用比例（百分比形式）
-                currentUsage: usedPercent * 100,
+                currentUsage: Math.round(usedPercent * 100 * 100) / 100,
                 usageLimit: 100, // 以百分比表示，总量为 100%
                 
                 // 超额信息
@@ -498,8 +484,7 @@ export function formatAntigravityUsage(usageData) {
                 overageCharges: 0,
                 
                 // 下次重置时间
-                nextDateReset: modelInfo.resetTimeRaw ? new Date(modelInfo.resetTimeRaw).toISOString() :
-                               (modelInfo.resetTime ? new Date(modelInfo.resetTime).toISOString() : null),
+                nextDateReset: resetTimeRaw ? (typeof resetTimeRaw === 'number' ? new Date(resetTimeRaw * 1000).toISOString() : new Date(resetTimeRaw).toISOString()) : null,
                 
                 // 免费试用信息
                 freeTrial: null,
@@ -512,10 +497,107 @@ export function formatAntigravityUsage(usageData) {
                 inputTokenLimit: modelInfo.inputTokenLimit || 0,
                 outputTokenLimit: modelInfo.outputTokenLimit || 0,
                 remaining: remainingPercent,
-                remainingPercent: remainingPercent * 100, // 剩余百分比
+                remainingPercent: Math.round(remainingPercent * 100 * 100) / 100, // 剩余百分比
+                resetTime: resetTimeFormatted,
+                resetTimeRaw: resetTimeRaw
+            };
+
+            result.usageBreakdown.push(item);
+        }
+    }
+
+    return result;
+}
+
+/**
+ * 格式化 Codex 用量信息为易读格式（映射到 Kiro 数据结构）
+ * @param {Object} usageData - 原始用量数据
+ * @returns {Object} 格式化后的用量信息
+ */
+export function formatCodexUsage(usageData) {
+    if (!usageData) {
+        return null;
+    }
+
+    const result = {
+        // 基本信息 - 映射到 Kiro 结构
+        daysUntilReset: null,
+        nextDateReset: null,
+        
+        // 订阅信息
+        subscription: {
+            title: usageData.raw?.planType ? `Codex (${usageData.raw.planType})` : 'Codex OAuth',
+            type: 'openai-codex-oauth',
+            upgradeCapability: null,
+            overageCapability: null
+        },
+        
+        // 用户信息
+        user: {
+            email: null,
+            userId: null
+        },
+        
+        // 用量明细
+        usageBreakdown: []
+    };
+
+    // 从 raw.rateLimit 提取重置时间
+    if (usageData.raw?.rateLimit?.primaryWindow?.resetAt) {
+        const resetTimestamp = usageData.raw.rateLimit.primaryWindow.resetAt;
+        result.nextDateReset = new Date(resetTimestamp * 1000).toISOString();
+        // 计算距离重置的天数
+        const resetDate = new Date(resetTimestamp * 1000);
+        const now = new Date();
+        const diffTime = resetDate.getTime() - now.getTime();
+        result.daysUntilReset = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    }
+
+    // 解析模型配额信息
+    if (usageData.models && typeof usageData.models === 'object') {
+        for (const [modelName, modelInfo] of Object.entries(usageData.models)) {
+            // Codex 返回的数据结构：{ remaining, resetTime, resetTimeRaw }
+            // remaining 是 0-1 之间的比例值，表示剩余配额百分比
+            const remainingPercent = typeof modelInfo.remaining === 'number' ? modelInfo.remaining : 1;
+            const usedPercent = 1 - remainingPercent;
+            
+            const item = {
+                resourceType: 'MODEL_USAGE',
+                displayName: modelInfo.displayName || modelName,
+                displayNamePlural: modelInfo.displayName || modelName,
+                unit: 'quota',
+                currency: null,
+                
+                // 当前用量 - Codex 返回的是剩余比例，转换为已用比例（百分比形式）
+                currentUsage: Math.round(usedPercent * 100),
+                usageLimit: 100, // 以百分比表示，总量为 100%
+                
+                // 超额信息
+                currentOverages: 0,
+                overageCap: 0,
+                overageRate: null,
+                overageCharges: 0,
+                
+                // 下次重置时间
+                nextDateReset: modelInfo.resetTimeRaw ? new Date(modelInfo.resetTimeRaw * 1000).toISOString() :
+                               (modelInfo.resetTime ? new Date(modelInfo.resetTime).toISOString() : null),
+                
+                // 免费试用信息
+                freeTrial: null,
+                
+                // 奖励信息
+                bonuses: [],
+
+                // 额外的 Codex 特有信息
+                modelName: modelName,
+                remaining: remainingPercent,
+                remainingPercent: Math.round(remainingPercent * 100), // 剩余百分比
                 resetTime: (modelInfo.resetTimeRaw || modelInfo.resetTime) ?
-                           utcToBeijing(modelInfo.resetTimeRaw || modelInfo.resetTime) : '--',
-                resetTimeRaw: modelInfo.resetTimeRaw || modelInfo.resetTime || null
+                           formatToLocal(modelInfo.resetTimeRaw || modelInfo.resetTime) : '--',
+                resetTimeRaw: modelInfo.resetTimeRaw || modelInfo.resetTime || null,
+                
+                // 注入 raw 窗口信息以便前端使用
+                rateLimit: usageData.raw?.rateLimit
             };
 
             result.usageBreakdown.push(item);

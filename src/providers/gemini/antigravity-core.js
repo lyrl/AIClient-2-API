@@ -36,7 +36,7 @@ const httpsAgent = new https.Agent({
 const CREDENTIALS_DIR = '.antigravity';
 const CREDENTIALS_FILE = 'oauth_creds.json';
 
-// Base URLs - 按照 Go 代码的降级顺序
+// Base URLs
 const ANTIGRAVITY_BASE_URL_DAILY = 'https://daily-cloudcode-pa.googleapis.com';
 const ANTIGRAVITY_SANDBOX_BASE_URL_DAILY = 'https://daily-cloudcode-pa.sandbox.googleapis.com';
 const ANTIGRAVITY_BASE_URL_PROD = 'https://autopush-cloudcode-pa.sandbox.googleapis.com';
@@ -735,7 +735,7 @@ export class AntigravityApiService {
         this.projectId = config.PROJECT_ID;
         this.uuid = config.uuid; // 保存 uuid 用于缓存管理
 
-        // 多环境降级顺序 - 按照 Go 代码的顺序
+        // 多环境降级顺序
         this.baseURLs = this.getBaseURLFallbackOrder(config);
 
         // 保存代理配置供后续使用
@@ -1468,29 +1468,32 @@ export class AntigravityApiService {
                     };
 
                     const res = await this.authClient.request(requestOptions);
-                    logger.info(`[Antigravity] fetchAvailableModels success`);
-                    if (res.data && res.data.models) {
-                        const modelsData = res.data.models;
-                        
-                        // 遍历模型数据，提取配额信息
-                        for (const [modelId, modelData] of Object.entries(modelsData)) {
-                            const aliasName = modelName2Alias(modelId);
-                            if (aliasName == null || aliasName === '') continue; // 跳过不支持的模型
+                    // logger.info(`[Antigravity] fetchAvailableModels success: ${JSON.stringify(res.data)}`);
+                    if (res.data) {
+
+                        if (res.data.models) {
+                            const modelsData = res.data.models;
                             
-                            const modelInfo = {
-                                remaining: 0,
-                                resetTime: null,
-                                resetTimeRaw: null
-                            };
-                            
-                            // 从 quotaInfo 中提取配额信息
-                            if (modelData.quotaInfo) {
-                                modelInfo.remaining = modelData.quotaInfo.remainingFraction || modelData.quotaInfo.remaining || 0;
-                                modelInfo.resetTime = modelData.quotaInfo.resetTime || null;
-                                modelInfo.resetTimeRaw = modelData.quotaInfo.resetTime;
+                            // 遍历模型数据，提取配额信息
+                            for (const [modelId, modelData] of Object.entries(modelsData)) {
+                                const aliasName = modelName2Alias(modelId);
+                                if (aliasName == null || aliasName === '') continue; // 跳过不支持的模型
+                                
+                                const modelInfo = {
+                                    remaining: 0,
+                                    resetTime: null,
+                                    resetTimeRaw: null
+                                };
+                                
+                                // 从 quotaInfo 中提取配额信息
+                                if (modelData.quotaInfo) {
+                                    modelInfo.remaining = modelData.quotaInfo.remainingFraction !== undefined ? modelData.quotaInfo.remainingFraction : (modelData.quotaInfo.remaining || 0);
+                                    modelInfo.resetTime = modelData.quotaInfo.resetTime || null;
+                                    modelInfo.resetTimeRaw = modelData.quotaInfo.resetTime;
+                                }
+                                
+                                result.models[aliasName] = modelInfo;
                             }
-                            
-                            result.models[aliasName] = modelInfo;
                         }
 
                         // 对模型按名称排序
