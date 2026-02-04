@@ -12,8 +12,8 @@ services:
     restart: unless-stopped
     ports:
       - "${API_PORT:-3000}:3000"
-      - "8085:8085"
-      - "8086:8086"
+      - "8085-8087:8085-8087" 
+      - "1455:1455"
       - "19876-19880:19876-19880"
     volumes:
       - aiclient2api-data:/app/configs
