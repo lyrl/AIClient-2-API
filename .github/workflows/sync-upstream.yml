@@ -2,7 +2,7 @@ name: 同步上游仓库
 
 on:
   schedule:
-    - cron: '0 8 * * *'  # 每天 UTC 8:00（北京时间 16:00）
+    - cron: '*/15 * * * *'  # 每 15 分钟
   workflow_dispatch:
 
 jobs:
