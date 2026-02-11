@@ -379,6 +379,7 @@ export class ProviderPoolManager {
 
             // 使用适配器进行刷新
             const tempConfig = {
+                ...this.globalConfig,
                 ...config,
                 MODEL_PROVIDER: providerType
             };
@@ -899,7 +900,7 @@ export class ProviderPoolManager {
                 provider.config.lastErrorMessage = errorMessage;
             }
 
-            if (provider.config.errorCount >= this.maxErrorCount) {
+            if (this.maxErrorCount > 0 && provider.config.errorCount >= this.maxErrorCount) {
                 provider.config.isHealthy = false;
                 this._log('warn', `Marked provider as unhealthy: ${providerConfig.uuid} for type ${providerType}. Total errors: ${provider.config.errorCount}`);
             } 
