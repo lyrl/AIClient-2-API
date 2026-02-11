@@ -1,0 +1,69 @@
+name: 同步上游仓库
+
+on:
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 配置 Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: 添加上游仓库并获取更新
+        run: |
+          git remote add upstream https://github.com/justlovemaki/AIClient-2-API.git
+          git fetch upstream main
+
+      - name: 检查是否有新提交
+        id: check
+        run: |
+          DIFF_COUNT=$(git rev-list HEAD..upstream/main --count)
+          echo "diff_count=$DIFF_COUNT" >> $GITHUB_OUTPUT
+          if [ "$DIFF_COUNT" -eq 0 ]; then
+            echo "上游没有新提交，无需同步"
+          else
+            echo "上游有 $DIFF_COUNT 个新提交待同步"
+          fi
+
+      - name: 尝试自动合并
+        if: steps.check.outputs.diff_count != '0'
+        id: merge
+        run: |
+          if git merge upstream/main --no-edit; then
+            echo "result=success" >> $GITHUB_OUTPUT
+            echo "自动合并成功"
+          else
+            git merge --abort
+            echo "result=conflict" >> $GITHUB_OUTPUT
+            echo "存在冲突，将创建 PR"
+          fi
+
+      - name: 推送合并结果
+        if: steps.merge.outputs.result == 'success'
+        run: git push origin main
+
+      - name: 创建冲突处理分支和 PR
+        if: steps.merge.outputs.result == 'conflict'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="sync-upstream-$(date +%Y%m%d%H%M%S)"
+          git checkout -b "$BRANCH" upstream/main
+          git push origin "$BRANCH"
+          gh pr create \
+            --title "Sync upstream: 需要手动解决冲突" \
+            --body "上游仓库有新更新，但与本地修改存在冲突，请手动解决。" \
+            --base main \
+            --head "$BRANCH"
