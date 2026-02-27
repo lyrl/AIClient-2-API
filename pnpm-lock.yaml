@@ -75,6 +75,10 @@ importers:
       supertest:
         specifier: ^6.3.3
         version: 6.3.4
+    optionalDependencies:
+      koffi:
+        specifier: ^2.15.1
+        version: 2.15.1
 
 packages:
 
@@ -1628,6 +1632,9 @@ packages:
   kleur@3.0.3:
     resolution: {integrity: sha512-eTIzlVOSUR+JxdDFepEYcBMtZ9Qqdef+rnzWdRZuMbOywu5tO2w2N7rqjoANZ5k9vywhL6Br1VRjUIgTQx4E8w==}
     engines: {node: '>=6'}
+
+  koffi@2.15.1:
+    resolution: {integrity: sha512-mnc0C0crx/xMSljb5s9QbnLrlFHprioFO1hkXyuSuO/QtbpLDa0l/uM21944UfQunMKmp3/r789DTDxVyyH6aA==}
 
   leven@3.1.0:
     resolution: {integrity: sha512-qsda+H8jTaUaN/x5vzW2rzc+8Rw4TAQ/4KjB46IwK5VH+IlVeeeje/EoZRpiXvIqjFgK84QffqPztGI3VBLG1A==}
@@ -4265,6 +4272,9 @@ snapshots:
       safe-buffer: 5.2.1
 
   kleur@3.0.3: {}
+
+  koffi@2.15.1:
+    optional: true
 
   leven@3.1.0: {}
 
