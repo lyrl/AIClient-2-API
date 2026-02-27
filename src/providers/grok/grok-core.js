@@ -2,11 +2,11 @@ import axios from 'axios';
 import logger from '../../utils/logger.js';
 import * as http from 'http';
 import * as https from 'https';
-import * as tls from 'tls';
+import { initTlsClient, isTlsClientAvailable, tlsRequest, tlsStreamRequest } from '../../utils/tls-client.js';
+import { isProxyEnabledForProvider, configureAxiosProxy } from '../../utils/proxy-utils.js';
 import { v4 as uuidv4 } from 'uuid';
 import { API_ACTIONS, isRetryableNetworkError } from '../../utils/common.js';
 import { getProviderModels } from '../provider-models.js';
-import { configureAxiosProxy } from '../../utils/proxy-utils.js';
 import { MODEL_PROVIDER } from '../../utils/common.js';
 import { GrokConverter } from '../../converters/strategies/GrokConverter.js';
 import { ConverterFactory } from '../../converters/ConverterFactory.js';
@@ -108,6 +108,8 @@ export class GrokApiService {
         this.isInitialized = false;
         this.converter = new GrokConverter();
         this.lastSyncAt = null;
+        this.useTlsClient = false;
+        this.tlsProfile = config.GROK_TLS_PROFILE || 'chrome_131';
     }
 
     async initialize() {
@@ -118,6 +120,19 @@ export class GrokApiService {
         }
         if (!this.cfClearance) {
             logger.debug('[Grok] GROK_CF_CLEARANCE not set. TLS/header fingerprinting should bypass Cloudflare without it.');
+        }
+
+        // 尝试加载 tls-client 共享库（完整 Chrome TLS 指纹伪装）
+        try {
+            await initTlsClient();
+            this.useTlsClient = isTlsClientAvailable();
+            if (this.useTlsClient) {
+                logger.info(`[Grok] Using tls-client (profile: ${this.tlsProfile}) for Chrome TLS fingerprinting`);
+            } else {
+                logger.info('[Grok] Using native HTTPS with Chrome cipher suite configuration (partial fingerprint)');
+            }
+        } catch (e) {
+            logger.info(`[Grok] tls-client not available: ${e.message}. Using native HTTPS fallback.`);
         }
         
         // Initial usage sync
@@ -154,21 +169,35 @@ export class GrokApiService {
             "modelName": "grok-4-1-thinking-1129", // Default model for checking limits
         };
 
-        const axiosConfig = {
-            method: 'post',
-            url: rateLimitsApi,
-            headers: headers,
-            data: payload,
-            httpAgent,
-            httpsAgent,
-            timeout: 30000
-        };
-
-        configureAxiosProxy(axiosConfig, this.config, MODEL_PROVIDER.GROK_CUSTOM);
-
         try {
-            const response = await axios(axiosConfig);
-            const data = response.data;
+            let data;
+
+            if (this.useTlsClient) {
+                // tls-client 路径：完整 Chrome TLS 指纹
+                const resp = await tlsRequest(rateLimitsApi, {
+                    method: 'POST',
+                    headers,
+                    body: payload,
+                    profile: this.tlsProfile,
+                    timeout: 30,
+                    proxy: this._getProxyUrl(),
+                });
+                data = typeof resp.data === 'string' ? JSON.parse(resp.data) : resp.data;
+            } else {
+                // axios 降级路径：Chrome cipher suite
+                const axiosConfig = {
+                    method: 'post',
+                    url: rateLimitsApi,
+                    headers: headers,
+                    data: payload,
+                    httpAgent,
+                    httpsAgent,
+                    timeout: 30000
+                };
+                configureAxiosProxy(axiosConfig, this.config, MODEL_PROVIDER.GROK_CUSTOM);
+                const response = await axios(axiosConfig);
+                data = response.data;
+            }
             
             let remaining = data.remainingTokens;
             if (remaining === undefined) {
@@ -244,6 +273,16 @@ export class GrokApiService {
             msg = `e:TypeError: Cannot read properties of undefined (reading '${rand}')`;
         }
         return Buffer.from(msg).toString('base64');
+    }
+
+    /**
+     * 获取代理 URL（供 tls-client 使用）
+     */
+    _getProxyUrl() {
+        if (isProxyEnabledForProvider(this.config, MODEL_PROVIDER.GROK_CUSTOM) && this.config.PROXY_URL) {
+            return this.config.PROXY_URL;
+        }
+        return '';
     }
 
     buildHeaders() {
@@ -526,26 +565,37 @@ export class GrokApiService {
 
         const headers = this.buildHeaders();
         const uploadApi = `${this.baseUrl}/rest/app-chat/upload-file`;
-
-        const axiosConfig = {
-            method: 'post',
-            url: uploadApi,
-            headers: headers,
-            data: {
-                fileName,
-                fileMimeType: mime,
-                content: b64
-            },
-            httpAgent,
-            httpsAgent,
-            timeout: 30000
-        };
-
-        configureAxiosProxy(axiosConfig, this.config, MODEL_PROVIDER.GROK_CUSTOM);
+        const uploadData = { fileName, fileMimeType: mime, content: b64 };
 
         try {
-            const response = await axios(axiosConfig);
-            return response.data; // { fileMetadataId: "...", fileUri: "..." }
+            let responseData;
+
+            if (this.useTlsClient) {
+                const resp = await tlsRequest(uploadApi, {
+                    method: 'POST',
+                    headers,
+                    body: uploadData,
+                    profile: this.tlsProfile,
+                    timeout: 30,
+                    proxy: this._getProxyUrl(),
+                });
+                responseData = typeof resp.data === 'string' ? JSON.parse(resp.data) : resp.data;
+            } else {
+                const axiosConfig = {
+                    method: 'post',
+                    url: uploadApi,
+                    headers: headers,
+                    data: uploadData,
+                    httpAgent,
+                    httpsAgent,
+                    timeout: 30000
+                };
+                configureAxiosProxy(axiosConfig, this.config, MODEL_PROVIDER.GROK_CUSTOM);
+                const response = await axios(axiosConfig);
+                responseData = response.data;
+            }
+
+            return responseData; // { fileMetadataId: "...", fileUri: "..." }
         } catch (error) {
             logger.error(`[Grok Upload] Failed to upload file:`, error.message);
             return null;
@@ -591,34 +641,62 @@ export class GrokApiService {
         const payload = this.buildPayload(model, requestBody);
         const headers = this.buildHeaders();
 
-        const axiosConfig = {
-            method: 'post',
-            url: this.chatApi,
-            headers: headers,
-            data: payload,
-            responseType: 'stream',
-            httpAgent,
-            httpsAgent,
-            timeout: 60000,
-            maxRedirects: 0
-        };
-
-        configureAxiosProxy(axiosConfig, this.config, MODEL_PROVIDER.GROK_CUSTOM);
-
         try {
-            const response = await axios(axiosConfig);
-            const contentType = response.headers['content-type'] || '';
-            logger.debug(`[Grok Stream] Connected. Status: ${response.status}, Content-Type: ${contentType}`);
+            let responseStream;
+            let responseStatus;
 
-            if (!contentType.includes('text/event-stream') && !contentType.includes('application/x-ndjson') && !contentType.includes('application/json')) {
-                logger.warn(`[Grok Stream] Unexpected Content-Type: ${contentType}. Possible redirect to login page?`);
-                if (contentType.includes('text/html')) {
-                    throw new Error('Grok returned HTML instead of SSE. Your SSO token might be invalid or expired.');
+            if (this.useTlsClient) {
+                // tls-client 路径：完整 Chrome TLS 指纹（响应会被缓冲后通过 Readable 逐行输出）
+                logger.debug('[Grok Stream] Using tls-client for request (buffered streaming)');
+                const resp = await tlsStreamRequest(this.chatApi, {
+                    method: 'POST',
+                    headers,
+                    body: payload,
+                    profile: this.tlsProfile,
+                    timeout: 120,
+                    proxy: this._getProxyUrl(),
+                });
+                responseStream = resp.data;
+                responseStatus = resp.status;
+
+                if (responseStatus === 403 || responseStatus === 401) {
+                    const err = new Error('Grok authentication failed (SSO token invalid or expired)');
+                    err.response = { status: responseStatus };
+                    throw err;
+                }
+            } else {
+                // axios 降级路径：Chrome cipher suite + 实时流
+                const axiosConfig = {
+                    method: 'post',
+                    url: this.chatApi,
+                    headers: headers,
+                    data: payload,
+                    responseType: 'stream',
+                    httpAgent,
+                    httpsAgent,
+                    timeout: 60000,
+                    maxRedirects: 0
+                };
+                configureAxiosProxy(axiosConfig, this.config, MODEL_PROVIDER.GROK_CUSTOM);
+                const response = await axios(axiosConfig);
+                responseStream = response.data;
+                responseStatus = response.status;
+
+                const contentType = response.headers['content-type'] || '';
+                logger.debug(`[Grok Stream] Connected. Status: ${responseStatus}, Content-Type: ${contentType}`);
+
+                if (!contentType.includes('text/event-stream') && !contentType.includes('application/x-ndjson') && !contentType.includes('application/json')) {
+                    logger.warn(`[Grok Stream] Unexpected Content-Type: ${contentType}. Possible redirect to login page?`);
+                    if (contentType.includes('text/html')) {
+                        throw new Error('Grok returned HTML instead of SSE. Your SSO token might be invalid or expired.');
+                    }
                 }
             }
 
+            logger.debug(`[Grok Stream] Connected. Status: ${responseStatus}`);
+
             const rl = readline.createInterface({
-                input: response.data,
+                input: responseStream,
                 terminal: false
             });
 
